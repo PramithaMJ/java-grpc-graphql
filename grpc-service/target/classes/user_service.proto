@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package com.example.grpc;
+
+option java_multiple_files = true;
+option java_package = "com.example.grpc.proto";
+option java_outer_classname = "UserServiceProto";
+
+// User service definition
+service UserService {
+  // Create a new user
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  
+  // Get user by ID
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  
+  // Get user by username
+  rpc GetUserByUsername(GetUserByUsernameRequest) returns (GetUserResponse);
+  
+  // Get all users
+  rpc GetAllUsers(GetAllUsersRequest) returns (GetAllUsersResponse);
+  
+  // Search users by name
+  rpc SearchUsers(SearchUsersRequest) returns (SearchUsersResponse);
+  
+  // Update user
+  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse);
+  
+  // Delete user
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+  
+  // Deactivate user
+  rpc DeactivateUser(DeactivateUserRequest) returns (DeactivateUserResponse);
+}
+
+// User message
+message User {
+  int64 id = 1;
+  string username = 2;
+  string email = 3;
+  string first_name = 4;
+  string last_name = 5;
+  string phone_number = 6;
+  string created_at = 7;
+  string updated_at = 8;
+  bool active = 9;
+}
+
+// Create user request
+message CreateUserRequest {
+  string username = 1;
+  string email = 2;
+  string first_name = 3;
+  string last_name = 4;
+  string phone_number = 5;
+}
+
+// Create user response
+message CreateUserResponse {
+  User user = 1;
+  bool success = 2;
+  string message = 3;
+}
+
+// Get user request
+message GetUserRequest {
+  int64 id = 1;
+}
+
+// Get user by username request
+message GetUserByUsernameRequest {
+  string username = 1;
+}
+
+// Get user response
+message GetUserResponse {
+  User user = 1;
+  bool found = 2;
+  string message = 3;
+}
+
+// Get all users request
+message GetAllUsersRequest {
+  bool active_only = 1;
+}
+
+// Get all users response
+message GetAllUsersResponse {
+  repeated User users = 1;
+  int32 count = 2;
+}
+
+// Search users request
+message SearchUsersRequest {
+  string search_term = 1;
+}
+
+// Search users response
+message SearchUsersResponse {
+  repeated User users = 1;
+  int32 count = 2;
+}
+
+// Update user request
+message UpdateUserRequest {
+  int64 id = 1;
+  string email = 2;
+  string first_name = 3;
+  string last_name = 4;
+  string phone_number = 5;
+  bool active = 6;
+}
+
+// Update user response
+message UpdateUserResponse {
+  User user = 1;
+  bool success = 2;
+  string message = 3;
+}
+
+// Delete user request
+message DeleteUserRequest {
+  int64 id = 1;
+}
+
+// Delete user response
+message DeleteUserResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Deactivate user request
+message DeactivateUserRequest {
+  int64 id = 1;
+}
+
+// Deactivate user response
+message DeactivateUserResponse {
+  User user = 1;
+  bool success = 2;
+  string message = 3;
+}

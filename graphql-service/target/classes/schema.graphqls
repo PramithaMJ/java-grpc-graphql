@@ -1,0 +1,81 @@
+type Query {
+    # Get user by ID
+    user(id: ID!): User
+    
+    # Get user by username
+    userByUsername(username: String!): User
+    
+    # Get all users
+    allUsers(activeOnly: Boolean = false): [User!]!
+    
+    # Search users by name
+    searchUsers(searchTerm: String!): [User!]!
+}
+
+type Mutation {
+    # Create a new user
+    createUser(input: CreateUserInput!): CreateUserPayload!
+    
+    # Update an existing user
+    updateUser(id: ID!, input: UpdateUserInput!): UpdateUserPayload!
+    
+    # Delete a user
+    deleteUser(id: ID!): DeleteUserPayload!
+    
+    # Deactivate a user
+    deactivateUser(id: ID!): DeactivateUserPayload!
+}
+
+# User type definition
+type User {
+    id: ID!
+    username: String!
+    email: String!
+    firstName: String!
+    lastName: String!
+    phoneNumber: String
+    createdAt: String!
+    updatedAt: String
+    active: Boolean!
+}
+
+# Input types
+input CreateUserInput {
+    username: String!
+    email: String!
+    firstName: String!
+    lastName: String!
+    phoneNumber: String
+}
+
+input UpdateUserInput {
+    email: String
+    firstName: String
+    lastName: String
+    phoneNumber: String
+    active: Boolean
+}
+
+# Payload types
+type CreateUserPayload {
+    user: User
+    success: Boolean!
+    message: String!
+}
+
+type UpdateUserPayload {
+    user: User
+    success: Boolean!
+    message: String!
+}
+
+type DeleteUserPayload {
+    success: Boolean!
+    message: String!
+}
+
+type DeactivateUserPayload {
+    user: User
+    success: Boolean!
+    message: String!
+}
