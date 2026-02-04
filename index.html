@@ -1,533 +1,510 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Server, Monitor, ArrowRight, ArrowLeft, Activity, 
-  Code, Globe, Binary, Database, Network, 
-  Layers, Play, RotateCcw, Zap, FileJson, CheckCircle,
-  Cpu, Lock
-} from 'lucide-react';
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Protocol Lab - Architecture Simulator</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
 
-// --- Simulation Data Models ---
+    <!-- Custom Font -->
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
 
-const PROTOCOLS = {
-  REST: {
-    id: 'REST',
-    name: 'REST API',
-    color: 'blue',
-    description: 'Representational State Transfer. Resource-based, blocking I/O (usually), standard HTTP verbs.',
-    tech: 'HTTP/1.1 • JSON • Text'
-  },
-  GRAPHQL: {
-    id: 'GRAPHQL',
-    name: 'GraphQL',
-    color: 'pink',
-    description: 'A query language. Runtime execution engine, AST parsing, and specific field resolution.',
-    tech: 'HTTP • Query Lang • JSON'
-  },
-  GRPC: {
-    id: 'GRPC',
-    name: 'gRPC',
-    color: 'emerald',
-    description: 'Remote Procedure Call. Non-blocking I/O (Netty), binary framing, contract-first.',
-    tech: 'HTTP/2 • Protobuf • Binary'
-  }
-};
-
-const SCENARIOS = {
-  REST: [
-    {
-      stage: 'CLIENT_PREP',
-      title: '1. Socket & Connection (Blocking)',
-      desc: 'The client opens a TCP socket. In HTTP/1.1, this might block a thread until the connection is established (SYN, SYN-ACK, ACK).',
-      code: `Socket socket = new Socket("api.host", 80);
-OutputStream out = socket.getOutputStream();
-// Thread blocks here waiting for connection...`,
-      explanation: 'Traditional REST clients often use blocking I/O. A dedicated thread is consumed just waiting for the TCP handshake to complete.'
-    },
-    {
-      stage: 'CLIENT_PREP',
-      title: '2. Text Header Construction',
-      desc: 'HTTP/1.1 text headers are constructed string-by-string. This is verbose and consumes bandwidth.',
-      code: `StringBuilder req = new StringBuilder();
-req.append("GET /users/123 HTTP/1.1\\r\\n");
-req.append("Host: api.example.com\\r\\n");
-req.append("Accept: application/json\\r\\n");
-req.append("\\r\\n"); // End of headers`,
-      explanation: 'Every character is a byte. "User-Agent", "Accept", "Host" are sent repeatedly for every single request, wasting bandwidth (Headers overhead).'
-    },
-    {
-      stage: 'NETWORK_REQ',
-      title: '3. Kernel Buffer Flush',
-      desc: 'The text bytes are flushed to the OS Kernel Socket Buffer.',
-      wire: { type: 'text', content: 'GET /users/123 HTTP/1.1...' },
-      explanation: 'The OS wraps this text in a TCP segment. Because it is text, no compression happens at this layer by default (unless TLS is involved).'
-    },
-    {
-      stage: 'SERVER_PROCESS',
-      title: '4. Thread-per-Request (Server)',
-      desc: 'The server (e.g., Tomcat) allocates a Worker Thread from a pool to handle this specific socket connection.',
-      code: `// Tomcat Worker Thread-15
-public void service(HttpServletRequest req, HttpServletResponse res) {
-   // This thread is now TIED to this user 
-   // until response is sent.
-   controller.getUser(req.getParameter("id"));
-}`,
-      explanation: 'Blocking model: If 10,000 users connect, you need 10,000 threads. This consumes massive RAM (1MB stack per thread) and causes CPU context switching.'
-    },
-    {
-      stage: 'SERVER_PROCESS',
-      title: '5. Controller & Database',
-      desc: 'The Controller executes business logic and fetches data.',
-      code: `User user = db.findById("123");
-// Returns: 
-// User(id="123", name="Alice", 
-//      secret="Hidden", history=[...huge list...])`,
-      explanation: 'The DB often returns the full row. The application now holds a large object in memory, even if the client only wanted the name.'
-    },
-    {
-      stage: 'SERVER_PROCESS',
-      title: '6. JSON Reflection & Serialization',
-      desc: 'Jackson/Gson uses Reflection to inspect the Java object and convert it to a JSON string.',
-      visualData: { 
-        format: 'JSON', 
-        payload: '{"id":"123","name":"Alice","secret":"Hidden",...}',
-        size: '120 bytes (High Overhead)'
-      },
-      explanation: 'Reflection is CPU intensive. Converting binary integers (User ID 123) to ASCII characters ("1", "2", "3") takes CPU cycles.'
-    },
-    {
-      stage: 'NETWORK_RES',
-      title: '7. Text Response Flush',
-      desc: 'The JSON string is written back to the socket.',
-      wire: { type: 'json', content: 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{...}' },
-      explanation: 'The client receives the data. Note "Over-fetching": we sent fields the client might not need, wasting network and parsing time.'
-    }
-  ],
-  GRAPHQL: [
-    {
-      stage: 'CLIENT_PREP',
-      title: '1. Query Construction',
-      desc: 'The client builds a query string. This is not JSON yet, it is GraphQL DSL.',
-      code: `const query = \`
-  query GetUser {
-    user(id: "123") {
-      name
-      active
-    }
-  }
-\`;`,
-      explanation: 'The client explicitly declares its data requirements. This moves the complexity from the server (multiple endpoints) to the client (smart queries).'
-    },
-    {
-      stage: 'NETWORK_REQ',
-      title: '2. JSON Envelope Transport',
-      desc: 'The query string is JSON-escaped and wrapped in a standard HTTP POST.',
-      wire: { type: 'text', content: 'POST /graphql\n{"query": "query GetUser { user(id: \\"123\\") { name } }"}' },
-      explanation: 'GraphQL is transport agnostic but usually runs over HTTP. The entire query is sent as a string payload within a JSON object.'
-    },
-    {
-      stage: 'SERVER_PROCESS',
-      title: '3. Lexing & Parsing (AST)',
-      desc: 'The server receives the string and tokenizes it into an Abstract Syntax Tree (AST).',
-      code: `// AST Representation
-OperationDefinition
-  Name: GetUser
-  SelectionSet
-    Field: user (arg: id=123)
-      SelectionSet
-        Field: name
-        Field: active`,
-      explanation: 'Before running any code, the engine understands the structure. This allows for powerful features like "Query Complexity Analysis" to reject expensive queries before execution.'
-    },
-    {
-      stage: 'SERVER_PROCESS',
-      title: '4. Validation Phase',
-      desc: 'The AST is validated against the strong Schema.',
-      code: `Schema Check:
-- Does type 'User' exist? YES
-- Does 'User' have field 'name'? YES
-- Is 'active' a Boolean? YES`,
-      explanation: 'Strict typing. If you ask for a field that does not exist, the request fails fast before hitting the database.'
-    },
-    {
-      stage: 'SERVER_PROCESS',
-      title: '5. Resolver Execution (BFS)',
-      desc: 'The engine traverses the AST. It executes "Resolvers" for each field.',
-      code: `1. Query.user(id: "123") -> Returns UserObj
-2. UserObj.name() -> "Alice"
-3. UserObj.active() -> true
-// 'secret' field is NEVER resolved/accessed`,
-      explanation: 'Precise fetching. We save CPU and DB I/O by not fetching/resolving fields that were not asked for (Under-fetching avoided via DataLoaders).'
-    },
-    {
-      stage: 'SERVER_PROCESS',
-      title: '6. Response Shaping',
-      desc: 'The result map is constructed to mirror the query exactly.',
-      visualData: { 
-        format: 'JSON', 
-        payload: '{"data":{"user":{"name":"Alice","active":true}}}',
-        size: '45 bytes'
-      },
-      explanation: 'Optimized payload. Only requested data is sent. However, we still have the JSON syntax overhead (quotes, braces).'
-    },
-    {
-      stage: 'NETWORK_RES',
-      title: '7. Transport',
-      desc: 'The standard JSON response is sent back.',
-      wire: { type: 'json', content: '{"data":{...}}' },
-      explanation: 'The client receives exactly what it expected. No more, no less.'
-    }
-  ],
-  GRPC: [
-    {
-      stage: 'CLIENT_PREP',
-      title: '1. Stub & Protobuf Builder',
-      desc: 'The client uses a generated builder. Values are typed (int, string) immediately.',
-      code: `HelloRequest.newBuilder()
-  .setId(123)       // int32
-  .setName("Alice") // string
-  .build();`,
-      explanation: 'No string manipulation. The object is built using strongly-typed setters generated from the .proto IDL.'
-    },
-    {
-      stage: 'CLIENT_PREP',
-      title: '2. Protobuf Encoding (VarInt/ZigZag)',
-      desc: 'Data is serialized to binary. Integers use VarInts. Signed ints use ZigZag encoding.',
-      visualData: { 
-        format: 'Protobuf (Binary)', 
-        payload: '08 7B 12 05 41 6C 69 63 65', 
-        size: '9 bytes'
-      },
-      explanation: '08 = Field 1 (id), WireType 0 (VarInt). 7B = 123. 12 = Field 2 (name), WireType 2 (Length). 05 = Length 5. Then "Alice". Zero wasted bytes.'
-    },
-    {
-      stage: 'NETWORK_REQ',
-      title: '3. HTTP/2 Framing & Streams',
-      desc: 'The binary payload is sliced into HTTP/2 DATA frames and assigned a Stream ID.',
-      code: `[Stream 5] [HEADERS] :method POST, :path /Greeter/SayHello
-[Stream 5] [DATA] [Length: 9] [Protobuf Blob]`,
-      explanation: 'Multiplexing: We can have Stream 5, Stream 7, and Stream 9 all active on the SAME TCP connection. No Head-of-Line blocking.'
-    },
-    {
-      stage: 'SERVER_PROCESS',
-      title: '4. Netty EventLoop (Non-Blocking)',
-      desc: 'A single Netty thread handles the incoming packet, deframes it, and hands it to the executor.',
-      code: `EventLoopGroup (1 thread)
--> Reads Network Buffer
--> Decodes HTTP/2 Frame
--> Reassembles gRPC Message
--> Dispatches to Application Executor`,
-      explanation: 'Reactive/Non-blocking. One thread can manage thousands of open connections because it only works when data is actually present.'
-    },
-    {
-      stage: 'SERVER_PROCESS',
-      title: '5. Zero-Copy Unmarshaling',
-      desc: 'Protobuf parses the binary directly into POJOs, often without intermediate string allocation.',
-      code: `// Internal efficient parsing
-int tag = input.readTag();
-if (tag == 8) { 
-  id = input.readInt32(); 
-}`,
-      explanation: 'Extremely CPU efficient. No text parsing, no searching for closing brackets, no type guessing.'
-    },
-    {
-      stage: 'SERVER_PROCESS',
-      title: '6. Service Implementation',
-      desc: 'Your business logic runs.',
-      code: `public void sayHello(Req r, StreamObserver resp) {
-  // Pure Java execution
-  resp.onNext( response );
-  resp.onCompleted();
-}`,
-      explanation: 'The developer focuses on logic. The framework handles the complex async plumbing.'
-    },
-    {
-      stage: 'NETWORK_RES',
-      title: '7. Response Streaming',
-      desc: 'Response is serialized and sent. HTTP/2 Trailers carry the status code.',
-      wire: { type: 'binary', content: 'HEADER(200)..DATA(Bytes)..HEADER(EOS)' },
-      explanation: 'Trailers allow the server to send the status (Success/Fail) AFTER the data has been sent, essential for long streaming operations.'
-    }
-  ]
-};
-
-// --- Components ---
-
-const MetricCard = ({ label, value, unit, best, color }) => {
-  const safeColor = color || 'slate';
-  const borderColorClass = best ? `border-${safeColor}-500/50` : 'border-slate-800';
-  const bgColorClass = best ? `bg-${safeColor}-900/30` : 'bg-slate-900';
-  const textColorClass = best ? `text-${safeColor}-400` : 'text-slate-300';
-
-  return (
-    <div className={`flex flex-col p-3 rounded-lg border ${borderColorClass} ${bgColorClass}`}>
-      <span className="text-[10px] uppercase text-slate-500 font-bold">{label}</span>
-      <div className="flex items-baseline gap-1 mt-1">
-        <span className={`text-xl font-mono font-bold ${textColorClass}`}>{value}</span>
-        <span className="text-xs text-slate-500">{unit}</span>
-      </div>
-    </div>
-  );
-};
-
-const Packet = ({ type, stage, protocol }) => {
-  const getStyle = () => {
-    switch(protocol) {
-      case 'REST': return 'bg-blue-600 shadow-blue-500/50';
-      case 'GRAPHQL': return 'bg-pink-600 shadow-pink-500/50';
-      case 'GRPC': return 'bg-emerald-600 shadow-emerald-500/50';
-      default: return 'bg-slate-600';
-    }
-  };
-
-  const getPosition = () => {
-    switch (stage) {
-      case 'CLIENT_PREP': return 'left-20';
-      case 'NETWORK_REQ': return 'left-1/3';
-      case 'SERVER_PROCESS': return 'left-2/3';
-      case 'NETWORK_RES': return 'left-1/3'; // Returning
-      default: return 'left-20';
-    }
-  };
-
-  return (
-    <div className={`absolute top-1/2 -translate-y-1/2 w-12 h-12 rounded-full z-20 flex items-center justify-center text-white transition-all duration-700 ease-in-out ${getStyle()} ${getPosition()}`}>
-      {type === 'binary' ? <Binary size={18} /> : type === 'json' ? <FileJson size={18} /> : <Code size={18} />}
-    </div>
-  );
-};
-
-export default function ApiProtocolLab() {
-  const [protocol, setProtocol] = useState('REST');
-  const [stepIndex, setStepIndex] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
-
-  // Safety checks
-  const scenario = SCENARIOS[protocol] || SCENARIOS['REST'];
-  const currentStep = scenario[stepIndex] || scenario[0];
-  const protocolData = PROTOCOLS[protocol] || PROTOCOLS['REST'];
-  const themeColor = protocolData.color;
-  
-  const getColorClass = (shade) => {
-    const c = themeColor;
-    if (shade === 'bg') return c === 'blue' ? 'bg-blue-600' : c === 'pink' ? 'bg-pink-600' : 'bg-emerald-600';
-    if (shade === 'text') return c === 'blue' ? 'text-blue-400' : c === 'pink' ? 'text-pink-400' : 'text-emerald-400';
-    if (shade === 'border') return c === 'blue' ? 'border-blue-500' : c === 'pink' ? 'border-pink-500' : 'border-emerald-500';
-    return '';
-  };
-
-  useEffect(() => {
-    let interval;
-    if (isPlaying) {
-      interval = setInterval(() => {
-        setStepIndex(prev => {
-          if (prev >= scenario.length - 1) {
-            setIsPlaying(false);
-            return prev;
-          }
-          return prev + 1;
-        });
-      }, 3500); // Slower for reading deep dive
-    }
-    return () => clearInterval(interval);
-  }, [isPlaying, protocol, scenario.length]);
-
-  const switchProtocol = (p) => {
-    setIsPlaying(false);
-    setStepIndex(0);
-    setProtocol(p);
-  };
-
-  return (
-    <div className="flex flex-col h-screen bg-slate-950 text-slate-200 font-sans overflow-hidden">
-      
-      {/* 1. TOP NAV */}
-      <header className="h-16 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between px-6 backdrop-blur-md">
-        <div className="flex items-center gap-3">
-          <div className={`p-2 rounded-lg shadow-lg ${getColorClass('bg')}`}>
-            <Network size={20} className="text-white" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-white">API Protocol Lab (Deep Dive)</h1>
-            <p className="text-xs text-slate-400 font-mono">Kernel • Framing • Threading Models</p>
-          </div>
-        </div>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        pre, code { font-family: 'JetBrains Mono', monospace; }
         
-        <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800">
-          {Object.values(PROTOCOLS).map(p => (
-            <button
-              key={p.id}
-              onClick={() => switchProtocol(p.id)}
-              className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all ${
-                protocol === p.id 
-                  ? `${p.color === 'blue' ? 'bg-blue-600' : p.color === 'pink' ? 'bg-pink-600' : 'bg-emerald-600'} text-white shadow-lg` 
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              {p.name}
-            </button>
-          ))}
-        </div>
-      </header>
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
 
-      {/* 2. MAIN SPLIT VIEW */}
-      <main className="flex-1 grid grid-cols-12 gap-0 overflow-hidden">
+        .animate-pulse-slow { animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
         
-        {/* LEFT: Simulation Stage */}
-        <div className="col-span-7 border-r border-slate-800 flex flex-col bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-slate-900 via-slate-950 to-slate-950 relative">
-          
-          {/* Protocol Info Header */}
-          <div className="p-4 border-b border-white/5 flex justify-between items-start">
+        /* Transition utility for smooth packet movement */
+        .packet-transition {
+            transition: all 0.7s ease-in-out;
+        }
+    </style>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        slate: { 950: '#020617' }
+                    }
+                }
+            },
+            safelist: [
+                'bg-blue-600', 'bg-pink-600', 'bg-emerald-600',
+                'text-blue-400', 'text-pink-400', 'text-emerald-400',
+                'border-blue-500', 'border-pink-500', 'border-emerald-500',
+                'shadow-blue-500/50', 'shadow-pink-500/50', 'shadow-emerald-500/50',
+                'bg-blue-900/30', 'bg-pink-900/30', 'bg-emerald-900/30',
+                'border-blue-500/50', 'border-pink-500/50', 'border-emerald-500/50',
+                'shadow-blue-900/20', 'shadow-pink-900/20', 'shadow-emerald-900/20'
+            ]
+        }
+    </script>
+</head>
+<body class="bg-slate-950 text-slate-200 h-screen flex flex-col overflow-hidden selection:bg-blue-500 selection:text-white">
+
+    <!-- TOP NAV -->
+    <header class="h-16 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between px-6 backdrop-blur-md z-30">
+        <div class="flex items-center gap-3">
+            <div id="logo-bg" class="p-2 rounded-lg shadow-lg bg-blue-600 transition-colors duration-300">
+                <i data-lucide="network" class="text-white w-5 h-5"></i>
+            </div>
             <div>
-              <h2 className={`text-lg font-bold ${getColorClass('text')}`}>{protocolData.tech}</h2>
-              <p className="text-sm text-slate-500">{protocolData.description}</p>
+                <h1 class="text-xl font-bold tracking-tight text-white">API Protocol Lab</h1>
+                <p class="text-xs text-slate-400 font-mono">Kernel • Framing • Threading Models</p>
             </div>
-            {/* Live Metrics */}
-            <div className="flex gap-2">
-              <MetricCard 
-                label="Efficiency" 
-                value={protocol === 'GRPC' ? 'High' : protocol === 'GRAPHQL' ? 'Med' : 'Low'} 
-                unit=""
-                best={protocol === 'GRPC'}
-                color={protocolData.color}
-              />
-               <MetricCard 
-                label="I/O Model" 
-                value={protocol === 'GRPC' ? 'Async' : 'Block'} 
-                unit=""
-                best={protocol === 'GRPC'}
-                color={protocolData.color}
-              />
-            </div>
-          </div>
+        </div>
+        
+        <div class="flex bg-slate-900 p-1 rounded-lg border border-slate-800" id="protocol-buttons">
+            <!-- Buttons injected by JS -->
+        </div>
+    </header>
 
-          {/* Animation Canvas */}
-          <div className="flex-1 relative flex items-center justify-center">
-             {/* Background Grid */}
-             <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:30px_30px]"></div>
-
-             {/* Client Box */}
-             <div className="absolute left-10 flex flex-col items-center gap-2 z-10">
-               <div className={`w-24 h-24 rounded-2xl border-2 ${currentStep.stage === 'CLIENT_PREP' ? `${getColorClass('border')} bg-slate-800` : 'border-slate-700 bg-slate-900'} flex items-center justify-center transition-colors duration-500`}>
-                 <Monitor size={32} className={currentStep.stage === 'CLIENT_PREP' ? 'text-white' : 'text-slate-600'} />
-               </div>
-               <span className="text-xs font-mono text-slate-400">CLIENT APP</span>
-             </div>
-
-             {/* Server Box */}
-             <div className="absolute right-10 flex flex-col items-center gap-2 z-10">
-               <div className={`w-24 h-24 rounded-2xl border-2 ${currentStep.stage === 'SERVER_PROCESS' ? `${getColorClass('border')} bg-slate-800` : 'border-slate-700 bg-slate-900'} flex flex-col items-center justify-center transition-colors duration-500 gap-1`}>
-                 <Server size={24} className={currentStep.stage === 'SERVER_PROCESS' ? 'text-white' : 'text-slate-600'} />
-                 <div className="flex gap-1">
-                    <Cpu size={12} className={currentStep.stage === 'SERVER_PROCESS' ? 'text-white animate-pulse' : 'text-slate-700'} />
-                    <Database size={12} className={currentStep.stage === 'SERVER_PROCESS' ? 'text-white' : 'text-slate-700'} />
-                 </div>
-               </div>
-               <span className="text-xs font-mono text-slate-400">BACKEND</span>
-             </div>
-
-             {/* Connection Line */}
-             <div className="absolute left-32 right-32 h-1 bg-slate-800 overflow-hidden">
-                <div className={`w-full h-full bg-slate-700 opacity-20 ${currentStep.stage.includes('NETWORK') ? 'animate-pulse' : ''}`}></div>
-             </div>
-
-             {/* Moving Packet */}
-             {(stepIndex > 0) && (
-               <Packet 
-                 protocol={protocol} 
-                 stage={currentStep.stage} 
-                 type={protocol === 'GRPC' ? 'binary' : protocol === 'REST' && stepIndex >= 4 ? 'json' : protocol === 'GRAPHQL' && stepIndex >= 5 ? 'json' : 'text'} 
-               />
-             )}
-
-             {/* Status Badge (Center) */}
-             <div className="absolute top-10 flex flex-col items-center">
-                <span className="text-[10px] uppercase tracking-widest text-slate-600 mb-2">OS / Network Layer</span>
-                <div className="px-3 py-1 rounded-full bg-slate-900 border border-slate-700 text-xs font-mono text-slate-300 flex items-center gap-2">
-                  <Globe size={12} />
-                  {protocol === 'GRPC' ? 'TCP / HTTP/2 (Multiplexed)' : 'TCP / HTTP/1.1 (Persistent)'}
+    <!-- MAIN GRID -->
+    <main class="flex-1 grid grid-cols-12 gap-0 overflow-hidden">
+        
+        <!-- LEFT: Simulation Stage -->
+        <div class="col-span-7 border-r border-slate-800 flex flex-col bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-slate-900 via-slate-950 to-slate-950 relative">
+            
+            <!-- Protocol Info Header -->
+            <div class="p-4 border-b border-white/5 flex justify-between items-start z-20 relative">
+                <div>
+                    <h2 id="protocol-tech" class="text-lg font-bold text-blue-400 transition-colors">HTTP/1.1 • JSON • Text</h2>
+                    <p id="protocol-desc" class="text-sm text-slate-500">Representational State Transfer.</p>
                 </div>
-             </div>
-          </div>
+                <!-- Live Metrics -->
+                <div class="flex gap-2" id="metrics-container">
+                    <!-- Metrics injected by JS -->
+                </div>
+            </div>
 
-          {/* Player Controls */}
-          <div className="h-20 border-t border-slate-800 bg-slate-900/50 p-4 flex items-center gap-4">
-             <button onClick={() => {setStepIndex(0); setIsPlaying(false);}} className="p-2 hover:bg-slate-800 rounded-full text-slate-400"><RotateCcw size={18}/></button>
-             <button 
-               onClick={() => setIsPlaying(!isPlaying)}
-               className={`flex-1 h-10 rounded-lg flex items-center justify-center gap-2 font-bold text-sm transition-all ${isPlaying ? 'bg-slate-700 text-slate-300' : `${getColorClass('bg')} text-white shadow-lg shadow-${themeColor}-900/20`}`}
-             >
-               {isPlaying ? 'PAUSE' : 'RUN DEEP DIVE'}
-               {!isPlaying && <Play size={16} fill="currentColor"/>}
-             </button>
-             <div className="text-xs font-mono text-slate-500 w-12 text-right">
-                {stepIndex + 1}/{scenario.length}
-             </div>
-          </div>
+            <!-- Animation Canvas -->
+            <div class="flex-1 relative flex items-center justify-center overflow-hidden">
+                <!-- Background Grid -->
+                <div class="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:30px_30px]"></div>
+
+                <!-- Client Box -->
+                <div class="absolute left-10 flex flex-col items-center gap-2 z-10">
+                    <div id="client-box" class="w-24 h-24 rounded-2xl border-2 border-slate-700 bg-slate-900 flex items-center justify-center transition-all duration-500">
+                        <i data-lucide="monitor" id="client-icon" class="w-8 h-8 text-slate-600"></i>
+                    </div>
+                    <span class="text-xs font-mono text-slate-400">CLIENT APP</span>
+                </div>
+
+                <!-- Server Box -->
+                <div class="absolute right-10 flex flex-col items-center gap-2 z-10">
+                    <div id="server-box" class="w-24 h-24 rounded-2xl border-2 border-slate-700 bg-slate-900 flex flex-col items-center justify-center transition-all duration-500 gap-1">
+                        <i data-lucide="server" id="server-icon" class="w-6 h-6 text-slate-600"></i>
+                        <div class="flex gap-1">
+                            <i data-lucide="cpu" id="cpu-icon" class="w-3 h-3 text-slate-700"></i>
+                            <i data-lucide="database" id="db-icon" class="w-3 h-3 text-slate-700"></i>
+                        </div>
+                    </div>
+                    <span class="text-xs font-mono text-slate-400">BACKEND</span>
+                </div>
+
+                <!-- Connection Line -->
+                <div class="absolute left-32 right-32 h-1 bg-slate-800 overflow-hidden rounded-full">
+                    <div id="connection-line-active" class="w-full h-full bg-slate-700 opacity-0 transition-opacity duration-300"></div>
+                </div>
+
+                <!-- Moving Packet -->
+                <div id="packet" class="absolute top-1/2 -translate-y-1/2 w-12 h-12 rounded-full z-20 flex items-center justify-center text-white packet-transition opacity-0 bg-slate-600 left-20 shadow-lg">
+                    <i id="packet-icon" data-lucide="code" class="w-5 h-5"></i>
+                </div>
+
+                <!-- Status Badge (Center) -->
+                <div class="absolute top-10 flex flex-col items-center">
+                    <span class="text-[10px] uppercase tracking-widest text-slate-600 mb-2">OS / Network Layer</span>
+                    <div class="px-3 py-1 rounded-full bg-slate-900 border border-slate-700 text-xs font-mono text-slate-300 flex items-center gap-2">
+                        <i data-lucide="globe" class="w-3 h-3"></i>
+                        <span id="transport-badge">TCP / HTTP/1.1</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Player Controls -->
+            <div class="h-20 border-t border-slate-800 bg-slate-900/50 p-4 flex items-center gap-4 z-30">
+                <button id="btn-reset" class="p-2 hover:bg-slate-800 rounded-full text-slate-400 transition-colors">
+                    <i data-lucide="rotate-ccw" class="w-5 h-5"></i>
+                </button>
+                <button id="btn-play" class="flex-1 h-10 rounded-lg flex items-center justify-center gap-2 font-bold text-sm transition-all bg-blue-600 text-white shadow-lg shadow-blue-900/20">
+                    <span id="play-text">RUN DEEP DIVE</span>
+                    <i id="play-icon" data-lucide="play" class="w-4 h-4 fill-current"></i>
+                </button>
+                <div id="step-counter" class="text-xs font-mono text-slate-500 w-12 text-right">1/7</div>
+            </div>
         </div>
 
-        {/* RIGHT: Code & Deep Dive */}
-        <div className="col-span-5 bg-slate-950 flex flex-col h-full overflow-hidden">
-          
-          {/* Header */}
-          <div className="p-6 border-b border-slate-800 bg-slate-900/30">
-            <h3 className="text-xl font-bold text-white mb-2">{currentStep.title}</h3>
-            <p className="text-slate-400 text-sm leading-relaxed">{currentStep.desc}</p>
-          </div>
-
-          {/* Scrollable Content */}
-          <div className="flex-1 overflow-y-auto p-0">
+        <!-- RIGHT: Code & Deep Dive -->
+        <div class="col-span-5 bg-slate-950 flex flex-col h-full overflow-hidden border-l border-slate-800">
             
-            {/* Engineer Note */}
-            <div className="p-6 border-b border-slate-800/50">
-               <div className="flex gap-3">
-                 <div className="mt-1"><Activity size={18} className={getColorClass('text')} /></div>
-                 <div>
-                   <h4 className={`text-sm font-bold ${getColorClass('text')} mb-1`}>Under the Hood</h4>
-                   <p className="text-sm text-slate-300 leading-relaxed">{currentStep.explanation}</p>
-                 </div>
-               </div>
+            <!-- Header -->
+            <div class="p-6 border-b border-slate-800 bg-slate-900/30">
+                <h3 id="step-title" class="text-xl font-bold text-white mb-2">1. Socket & Connection</h3>
+                <p id="step-desc" class="text-slate-400 text-sm leading-relaxed">The client opens a TCP socket.</p>
             </div>
 
-            {/* Code / Payload Viewer */}
-            {(currentStep.code || currentStep.wire || currentStep.visualData) && (
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-mono text-slate-500 uppercase flex items-center gap-2">
-                    <Code size={12}/>
-                    {currentStep.code ? 'Implementation / Internal State' : 'Wire / Packet Dump'}
-                  </span>
-                </div>
-                <div className="bg-slate-900 rounded-lg border border-slate-800 p-4 font-mono text-xs overflow-x-auto relative group shadow-inner">
-                  <div className={`absolute top-0 left-0 w-1 h-full ${getColorClass('bg')}`}></div>
-                  <pre className="text-slate-300 whitespace-pre-wrap">
-                    {currentStep.code || (currentStep.wire && currentStep.wire.content) || (currentStep.visualData && currentStep.visualData.payload)}
-                  </pre>
+            <!-- Scrollable Content -->
+            <div class="flex-1 overflow-y-auto p-0 scroll-smooth">
+                
+                <!-- Engineer Note -->
+                <div class="p-6 border-b border-slate-800/50">
+                    <div class="flex gap-3">
+                        <div class="mt-1">
+                            <i data-lucide="activity" id="note-icon" class="w-5 h-5 text-blue-400"></i>
+                        </div>
+                        <div>
+                            <h4 id="note-title" class="text-sm font-bold text-blue-400 mb-1">Under the Hood</h4>
+                            <p id="step-explanation" class="text-sm text-slate-300 leading-relaxed">Detailed technical explanation here.</p>
+                        </div>
+                    </div>
                 </div>
 
-                {/* Metadata Table if VisualData exists */}
-                {currentStep.visualData && (
-                  <div className="mt-4 grid grid-cols-2 gap-4">
-                    <div className="bg-slate-900/50 p-3 rounded border border-slate-800">
-                      <div className="text-[10px] text-slate-500 uppercase font-bold">Format</div>
-                      <div className="text-slate-200 text-sm font-mono mt-1">{currentStep.visualData.format}</div>
+                <!-- Code / Payload Viewer -->
+                <div id="code-container" class="p-6 transition-opacity duration-300">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-mono text-slate-500 uppercase flex items-center gap-2">
+                            <i data-lucide="code" class="w-3 h-3"></i>
+                            <span id="code-label">Implementation</span>
+                        </span>
                     </div>
-                    <div className="bg-slate-900/50 p-3 rounded border border-slate-800">
-                      <div className="text-[10px] text-slate-500 uppercase font-bold">Size Overhead</div>
-                      <div className={`text-sm font-mono mt-1 font-bold ${protocol === 'GRPC' ? 'text-emerald-400' : 'text-orange-400'}`}>
-                        {currentStep.visualData.size}
-                      </div>
+                    <div class="bg-slate-900 rounded-lg border border-slate-800 p-4 font-mono text-xs overflow-x-auto relative group shadow-inner">
+                        <div id="code-bar" class="absolute top-0 left-0 w-1 h-full bg-blue-600"></div>
+                        <pre id="code-content" class="text-slate-300 whitespace-pre-wrap">Code goes here...</pre>
                     </div>
-                  </div>
-                )}
-              </div>
-            )}
-            
-            <div className="h-10"></div>
-          </div>
 
+                    <!-- Metadata Table (Visual Data) -->
+                    <div id="visual-data-container" class="mt-4 grid grid-cols-2 gap-4 hidden">
+                        <div class="bg-slate-900/50 p-3 rounded border border-slate-800">
+                            <div class="text-[10px] text-slate-500 uppercase font-bold">Format</div>
+                            <div id="vd-format" class="text-slate-200 text-sm font-mono mt-1">-</div>
+                        </div>
+                        <div class="bg-slate-900/50 p-3 rounded border border-slate-800">
+                            <div class="text-[10px] text-slate-500 uppercase font-bold">Size Overhead</div>
+                            <div id="vd-size" class="text-sm font-mono mt-1 font-bold text-orange-400">-</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="h-10"></div>
+            </div>
         </div>
+    </main>
 
-      </main>
-    </div>
-  );
-}
+    <!-- Application Logic -->
+    <script>
+        // --- Data Models ---
+        const PROTOCOLS = {
+            REST: {
+                id: 'REST',
+                name: 'REST API',
+                color: 'blue',
+                description: 'Representational State Transfer. Resource-based, blocking I/O (usually), standard HTTP verbs.',
+                tech: 'HTTP/1.1 • JSON • Text'
+            },
+            GRAPHQL: {
+                id: 'GRAPHQL',
+                name: 'GraphQL',
+                color: 'pink',
+                description: 'A query language. Runtime execution engine, AST parsing, and specific field resolution.',
+                tech: 'HTTP • Query Lang • JSON'
+            },
+            GRPC: {
+                id: 'GRPC',
+                name: 'gRPC',
+                color: 'emerald',
+                description: 'Remote Procedure Call. Non-blocking I/O (Netty), binary framing, contract-first.',
+                tech: 'HTTP/2 • Protobuf • Binary'
+            }
+        };
+
+        const SCENARIOS = {
+            REST: [
+                { stage: 'CLIENT_PREP', title: '1. Socket & Connection (Blocking)', desc: 'The client opens a TCP socket. In HTTP/1.1, this might block a thread until the connection is established.', code: 'Socket socket = new Socket("api.host", 80);\nOutputStream out = socket.getOutputStream();\n// Thread blocks here waiting for connection...', explanation: 'Traditional REST clients often use blocking I/O. A dedicated thread is consumed just waiting for the TCP handshake to complete.' },
+                { stage: 'CLIENT_PREP', title: '2. Text Header Construction', desc: 'HTTP/1.1 text headers are constructed string-by-string. This is verbose and consumes bandwidth.', code: 'StringBuilder req = new StringBuilder();\nreq.append("GET /users/123 HTTP/1.1\\r\\n");\nreq.append("Host: api.example.com\\r\\n");\nreq.append("Accept: application/json\\r\\n");', explanation: 'Every character is a byte. "User-Agent", "Accept", "Host" are sent repeatedly for every single request, wasting bandwidth (Headers overhead).' },
+                { stage: 'NETWORK_REQ', title: '3. Kernel Buffer Flush', desc: 'The text bytes are flushed to the OS Kernel Socket Buffer.', wire: { type: 'text', content: 'GET /users/123 HTTP/1.1...' }, explanation: 'The OS wraps this text in a TCP segment. Because it is text, no compression happens at this layer by default (unless TLS is involved).' },
+                { stage: 'SERVER_PROCESS', title: '4. Thread-per-Request (Server)', desc: 'The server (e.g., Tomcat) allocates a Worker Thread from a pool to handle this specific socket connection.', code: '// Tomcat Worker Thread-15\npublic void service(HttpServletRequest req, HttpServletResponse res) {\n   // This thread is now TIED to this user \n   // until response is sent.\n   controller.getUser(req.getParameter("id"));\n}', explanation: 'Blocking model: If 10,000 users connect, you need 10,000 threads. This consumes massive RAM (1MB stack per thread) and causes CPU context switching.' },
+                { stage: 'SERVER_PROCESS', title: '5. Controller & Database', desc: 'The Controller executes business logic and fetches data.', code: 'User user = db.findById("123");\n// Returns: \n// User(id="123", name="Alice", \n//      secret="Hidden", history=[...huge list...])', explanation: 'The DB often returns the full row. The application now holds a large object in memory, even if the client only wanted the name.' },
+                { stage: 'SERVER_PROCESS', title: '6. JSON Reflection & Serialization', desc: 'Jackson/Gson uses Reflection to inspect the Java object and convert it to a JSON string.', visualData: { format: 'JSON', payload: '{"id":"123","name":"Alice","secret":"Hidden",...}', size: '120 bytes (High Overhead)' }, explanation: 'Reflection is CPU intensive. Converting binary integers (User ID 123) to ASCII characters ("1", "2", "3") takes CPU cycles.' },
+                { stage: 'NETWORK_RES', title: '7. Text Response Flush', desc: 'The JSON string is written back to the socket.', wire: { type: 'json', content: 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{...}' }, explanation: 'The client receives the data. Note "Over-fetching": we sent fields the client might not need, wasting network and parsing time.' }
+            ],
+            GRAPHQL: [
+                { stage: 'CLIENT_PREP', title: '1. Query Construction', desc: 'The client builds a query string. This is not JSON yet, it is GraphQL DSL.', code: 'const query = `\n  query GetUser {\n    user(id: "123") {\n      name\n      active\n    }\n  }\n`;', explanation: 'The client explicitly declares its data requirements. This moves the complexity from the server (multiple endpoints) to the client (smart queries).' },
+                { stage: 'NETWORK_REQ', title: '2. JSON Envelope Transport', desc: 'The query string is JSON-escaped and wrapped in a standard HTTP POST.', wire: { type: 'text', content: 'POST /graphql\n{"query": "query GetUser { user(id: \\"123\\") { name } }"}' }, explanation: 'GraphQL is transport agnostic but usually runs over HTTP. The entire query is sent as a string payload within a JSON object.' },
+                { stage: 'SERVER_PROCESS', title: '3. Lexing & Parsing (AST)', desc: 'The server receives the string and tokenizes it into an Abstract Syntax Tree (AST).', code: '// AST Representation\nOperationDefinition\n  Name: GetUser\n  SelectionSet\n    Field: user (arg: id=123)\n      SelectionSet\n        Field: name\n        Field: active', explanation: 'Before running any code, the engine understands the structure. This allows for powerful features like "Query Complexity Analysis" to reject expensive queries before execution.' },
+                { stage: 'SERVER_PROCESS', title: '4. Validation Phase', desc: 'The AST is validated against the strong Schema.', code: 'Schema Check:\n- Does type "User" exist? YES\n- Does "User" have field "name"? YES\n- Is "active" a Boolean? YES', explanation: 'Strict typing. If you ask for a field that does not exist, the request fails fast before hitting the database.' },
+                { stage: 'SERVER_PROCESS', title: '5. Resolver Execution (BFS)', desc: 'The engine traverses the AST. It executes "Resolvers" for each field.', code: '1. Query.user(id: "123") -> Returns UserObj\n2. UserObj.name() -> "Alice"\n3. UserObj.active() -> true\n// "secret" field is NEVER resolved/accessed', explanation: 'Precise fetching. We save CPU and DB I/O by not fetching/resolving fields that were not asked for (Under-fetching avoided via DataLoaders).' },
+                { stage: 'SERVER_PROCESS', title: '6. Response Shaping', desc: 'The result map is constructed to mirror the query exactly.', visualData: { format: 'JSON', payload: '{"data":{"user":{"name":"Alice","active":true}}}', size: '45 bytes' }, explanation: 'Optimized payload. Only requested data is sent. However, we still have the JSON syntax overhead (quotes, braces).' },
+                { stage: 'NETWORK_RES', title: '7. Transport', desc: 'The standard JSON response is sent back.', wire: { type: 'json', content: '{"data":{...}}' }, explanation: 'The client receives exactly what it expected. No more, no less.' }
+            ],
+            GRPC: [
+                { stage: 'CLIENT_PREP', title: '1. Stub & Protobuf Builder', desc: 'The client uses a generated builder. Values are typed (int, string) immediately.', code: 'HelloRequest.newBuilder()\n  .setId(123)       // int32\n  .setName("Alice") // string\n  .build();', explanation: 'No string manipulation. The object is built using strongly-typed setters generated from the .proto IDL.' },
+                { stage: 'CLIENT_PREP', title: '2. Protobuf Encoding (VarInt/ZigZag)', desc: 'Data is serialized to binary. Integers use VarInts. Signed ints use ZigZag encoding.', visualData: { format: 'Protobuf (Binary)', payload: '08 7B 12 05 41 6C 69 63 65', size: '9 bytes' }, explanation: '08 = Field 1 (id), WireType 0 (VarInt). 7B = 123. 12 = Field 2 (name), WireType 2 (Length). 05 = Length 5. Then "Alice". Zero wasted bytes.' },
+                { stage: 'NETWORK_REQ', title: '3. HTTP/2 Framing & Streams', desc: 'The binary payload is sliced into HTTP/2 DATA frames and assigned a Stream ID.', code: '[Stream 5] [HEADERS] :method POST, :path /Greeter/SayHello\n[Stream 5] [DATA] [Length: 9] [Protobuf Blob]', explanation: 'Multiplexing: We can have Stream 5, Stream 7, and Stream 9 all active on the SAME TCP connection. No Head-of-Line blocking.' },
+                { stage: 'SERVER_PROCESS', title: '4. Netty EventLoop (Non-Blocking)', desc: 'A single Netty thread handles the incoming packet, deframes it, and hands it to the executor.', code: 'EventLoopGroup (1 thread)\n-> Reads Network Buffer\n-> Decodes HTTP/2 Frame\n-> Reassembles gRPC Message\n-> Dispatches to Application Executor', explanation: 'Reactive/Non-blocking. One thread can manage thousands of open connections because it only works when data is actually present.' },
+                { stage: 'SERVER_PROCESS', title: '5. Zero-Copy Unmarshaling', desc: 'Protobuf parses the binary directly into POJOs, often without intermediate string allocation.', code: '// Internal efficient parsing\nint tag = input.readTag();\nif (tag == 8) { \n  id = input.readInt32(); \n}', explanation: 'Extremely CPU efficient. No text parsing, no searching for closing brackets, no type guessing.' },
+                { stage: 'SERVER_PROCESS', title: '6. Service Implementation', desc: 'Your business logic runs.', code: 'public void sayHello(Req r, StreamObserver resp) {\n  // Pure Java execution\n  resp.onNext( response );\n  resp.onCompleted();\n}', explanation: 'The developer focuses on logic. The framework handles the complex async plumbing.' },
+                { stage: 'NETWORK_RES', title: '7. Response Streaming', desc: 'Response is serialized and sent. HTTP/2 Trailers carry the status code.', wire: { type: 'binary', content: 'HEADER(200)..DATA(Bytes)..HEADER(EOS)' }, explanation: 'Trailers allow the server to send the status (Success/Fail) AFTER the data has been sent, essential for long streaming operations.' }
+            ]
+        };
+
+        // --- State Management ---
+        const state = {
+            protocol: 'REST',
+            stepIndex: 0,
+            isPlaying: false,
+            intervalId: null
+        };
+
+        // --- DOM Elements ---
+        const els = {
+            logoBg: document.getElementById('logo-bg'),
+            protocolButtons: document.getElementById('protocol-buttons'),
+            protocolTech: document.getElementById('protocol-tech'),
+            protocolDesc: document.getElementById('protocol-desc'),
+            metricsContainer: document.getElementById('metrics-container'),
+            clientBox: document.getElementById('client-box'),
+            clientIcon: document.getElementById('client-icon'),
+            serverBox: document.getElementById('server-box'),
+            serverIcon: document.getElementById('server-icon'),
+            cpuIcon: document.getElementById('cpu-icon'),
+            dbIcon: document.getElementById('db-icon'),
+            connectionLineActive: document.getElementById('connection-line-active'),
+            packet: document.getElementById('packet'),
+            packetIcon: document.getElementById('packet-icon'),
+            transportBadge: document.getElementById('transport-badge'),
+            btnReset: document.getElementById('btn-reset'),
+            btnPlay: document.getElementById('btn-play'),
+            playText: document.getElementById('play-text'),
+            playIcon: document.getElementById('play-icon'),
+            stepCounter: document.getElementById('step-counter'),
+            stepTitle: document.getElementById('step-title'),
+            stepDesc: document.getElementById('step-desc'),
+            noteIcon: document.getElementById('note-icon'),
+            noteTitle: document.getElementById('note-title'),
+            stepExplanation: document.getElementById('step-explanation'),
+            codeLabel: document.getElementById('code-label'),
+            codeContent: document.getElementById('code-content'),
+            codeBar: document.getElementById('code-bar'),
+            visualDataContainer: document.getElementById('visual-data-container'),
+            vdFormat: document.getElementById('vd-format'),
+            vdSize: document.getElementById('vd-size')
+        };
+
+        // --- Helper: Get Color Classes ---
+        function getColors(protocolKey) {
+            const c = PROTOCOLS[protocolKey].color;
+            return {
+                bg: c === 'blue' ? 'bg-blue-600' : c === 'pink' ? 'bg-pink-600' : 'bg-emerald-600',
+                text: c === 'blue' ? 'text-blue-400' : c === 'pink' ? 'text-pink-400' : 'text-emerald-400',
+                border: c === 'blue' ? 'border-blue-500' : c === 'pink' ? 'border-pink-500' : 'border-emerald-500',
+                shadow: c === 'blue' ? 'shadow-blue-500/50' : c === 'pink' ? 'shadow-pink-500/50' : 'shadow-emerald-500/50',
+                bgSoft: c === 'blue' ? 'bg-blue-900/30' : c === 'pink' ? 'bg-pink-900/30' : 'bg-emerald-900/30',
+                borderSoft: c === 'blue' ? 'border-blue-500/50' : c === 'pink' ? 'border-pink-500/50' : 'border-emerald-500/50',
+                shadowSoft: c === 'blue' ? 'shadow-blue-900/20' : c === 'pink' ? 'shadow-pink-900/20' : 'shadow-emerald-900/20'
+            };
+        }
+
+        // --- Helper: Get Packet Position ---
+        function getPacketPosition(stage) {
+            switch (stage) {
+                case 'CLIENT_PREP': return '20px'; // Inside Client
+                case 'NETWORK_REQ': return '33%'; // On Wire (Right)
+                case 'SERVER_PROCESS': return '66%'; // Inside Server
+                case 'NETWORK_RES': return '33%'; // On Wire (Left)
+                default: return '20px';
+            }
+        }
+
+        // --- Helper: Render Metrics ---
+        function renderMetrics(protocolKey) {
+            const data = PROTOCOLS[protocolKey];
+            const colors = getColors(protocolKey);
+            
+            // Efficiency Metric
+            const effValue = protocolKey === 'GRPC' ? 'High' : protocolKey === 'GRAPHQL' ? 'Med' : 'Low';
+            const effBest = protocolKey === 'GRPC';
+            
+            // IO Metric
+            const ioValue = protocolKey === 'GRPC' ? 'Async' : 'Block';
+            const ioBest = protocolKey === 'GRPC';
+
+            const createCard = (label, val, isBest) => `
+                <div class="flex flex-col p-3 rounded-lg border ${isBest ? colors.borderSoft : 'border-slate-800'} ${isBest ? colors.bgSoft : 'bg-slate-900'}">
+                    <span class="text-[10px] uppercase text-slate-500 font-bold">${label}</span>
+                    <div class="flex items-baseline gap-1 mt-1">
+                        <span class="text-xl font-mono font-bold ${isBest ? colors.text : 'text-slate-300'}">${val}</span>
+                    </div>
+                </div>
+            `;
+
+            els.metricsContainer.innerHTML = 
+                createCard('Efficiency', effValue, effBest) + 
+                createCard('I/O Model', ioValue, ioBest);
+        }
+
+        // --- Helper: Update Packet Icon ---
+        function updatePacketIcon(type) {
+            const iconName = type === 'binary' ? 'binary' : type === 'json' ? 'file-json' : 'code';
+            els.packetIcon.setAttribute('data-lucide', iconName);
+            lucide.createIcons({ attrs: { class: "w-5 h-5" } });
+        }
+
+        // --- Render Function ---
+        function render() {
+            const pKey = state.protocol;
+            const step = SCENARIOS[pKey][state.stepIndex];
+            const colors = getColors(pKey);
+
+            // 1. Theme Coloring (Header & Logo)
+            els.logoBg.className = `p-2 rounded-lg shadow-lg transition-colors duration-300 ${colors.bg}`;
+            
+            // 2. Protocol Buttons
+            els.protocolButtons.innerHTML = Object.values(PROTOCOLS).map(p => {
+                const isActive = p.id === state.protocol;
+                const activeClasses = isActive 
+                    ? `${p.color === 'blue' ? 'bg-blue-600' : p.color === 'pink' ? 'bg-pink-600' : 'bg-emerald-600'} text-white shadow-lg` 
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800';
+                return `<button onclick="switchProtocol('${p.id}')" class="px-4 py-1.5 text-sm font-medium rounded-md transition-all ${activeClasses}">${p.name}</button>`;
+            }).join('');
+
+            // 3. Info Headers
+            els.protocolTech.textContent = PROTOCOLS[pKey].tech;
+            els.protocolTech.className = `text-lg font-bold transition-colors ${colors.text}`;
+            els.protocolDesc.textContent = PROTOCOLS[pKey].description;
+            els.transportBadge.textContent = pKey === 'GRPC' ? 'TCP / HTTP/2 (Multiplexed)' : 'TCP / HTTP/1.1 (Persistent)';
+
+            // 4. Metrics
+            renderMetrics(pKey);
+
+            // 5. Visual State (Boxes & Lines)
+            // Client
+            const isClientActive = step.stage === 'CLIENT_PREP';
+            els.clientBox.className = `w-24 h-24 rounded-2xl border-2 flex items-center justify-center transition-all duration-500 ${isClientActive ? `${colors.border} bg-slate-800` : 'border-slate-700 bg-slate-900'}`;
+            els.clientIcon.classList.toggle('text-white', isClientActive);
+            els.clientIcon.classList.toggle('text-slate-600', !isClientActive);
+
+            // Server
+            const isServerActive = step.stage === 'SERVER_PROCESS';
+            els.serverBox.className = `w-24 h-24 rounded-2xl border-2 flex flex-col items-center justify-center transition-all duration-500 gap-1 ${isServerActive ? `${colors.border} bg-slate-800` : 'border-slate-700 bg-slate-900'}`;
+            els.serverIcon.classList.toggle('text-white', isServerActive);
+            els.serverIcon.classList.toggle('text-slate-600', !isServerActive);
+            
+            // Server internals
+            els.cpuIcon.classList.toggle('text-white', isServerActive);
+            els.cpuIcon.classList.toggle('animate-pulse', isServerActive);
+            els.cpuIcon.classList.toggle('text-slate-700', !isServerActive);
+            els.dbIcon.classList.toggle('text-white', isServerActive);
+            els.dbIcon.classList.toggle('text-slate-700', !isServerActive);
+
+            // Connection Line
+            const isNetwork = step.stage.includes('NETWORK');
+            els.connectionLineActive.classList.toggle('opacity-100', isNetwork);
+            els.connectionLineActive.classList.toggle('opacity-0', !isNetwork);
+            els.connectionLineActive.classList.toggle('animate-pulse-slow', isNetwork);
+
+            // Packet
+            // Only show packet if index > 0
+            if (state.stepIndex > 0) {
+                els.packet.style.opacity = '1';
+                els.packet.style.left = getPacketPosition(step.stage);
+                els.packet.className = `absolute top-1/2 -translate-y-1/2 w-12 h-12 rounded-full z-20 flex items-center justify-center text-white packet-transition shadow-lg ${colors.bg} ${colors.shadow}`;
+                
+                // Determine packet type
+                let pktType = 'text';
+                if (pKey === 'GRPC') pktType = 'binary';
+                else if ((pKey === 'REST' && state.stepIndex >= 4) || (pKey === 'GRAPHQL' && state.stepIndex >= 5)) pktType = 'json';
+                else if (step.wire && step.wire.type) pktType = step.wire.type;
+                
+                updatePacketIcon(pktType);
+            } else {
+                els.packet.style.opacity = '0';
+                els.packet.style.left = '20px';
+            }
+
+            // 6. Right Panel Content
+            els.stepTitle.textContent = step.title;
+            els.stepDesc.textContent = step.desc;
+            els.noteTitle.className = `text-sm font-bold mb-1 ${colors.text}`;
+            els.noteIcon.className = `w-5 h-5 ${colors.text}`;
+            els.stepExplanation.textContent = step.explanation;
+
+            // Code/Wire View
+            els.codeLabel.textContent = step.code ? 'Implementation / Internal State' : 'Wire / Packet Dump';
+            els.codeContent.textContent = step.code || (step.wire && step.wire.content) || (step.visualData && step.visualData.payload);
+            els.codeBar.className = `absolute top-0 left-0 w-1 h-full ${colors.bg}`;
+
+            // Visual Data Metadata
+            if (step.visualData) {
+                els.visualDataContainer.classList.remove('hidden');
+                els.vdFormat.textContent = step.visualData.format;
+                els.vdSize.textContent = step.visualData.size;
+                els.vdSize.className = `text-sm font-mono mt-1 font-bold ${pKey === 'GRPC' ? 'text-emerald-400' : 'text-orange-400'}`;
+            } else {
+                els.visualDataContainer.classList.add('hidden');
+            }
+
+            // 7. Controls
+            els.stepCounter.textContent = `${state.stepIndex + 1}/${SCENARIOS[pKey].length}`;
+            els.btnPlay.className = `flex-1 h-10 rounded-lg flex items-center justify-center gap-2 font-bold text-sm transition-all ${state.isPlaying ? 'bg-slate-700 text-slate-300' : `${colors.bg} text-white ${colors.shadowSoft} shadow-lg`}`;
+            els.playText.textContent = state.isPlaying ? 'PAUSE' : 'RUN DEEP DIVE';
+            
+            // Re-run icons for dynamically injected HTML
+            lucide.createIcons();
+        }
+
+        // --- Actions ---
+        window.switchProtocol = (pKey) => {
+            state.protocol = pKey;
+            state.stepIndex = 0;
+            state.isPlaying = false;
+            clearInterval(state.intervalId);
+            render();
+        };
+
+        els.btnPlay.addEventListener('click', () => {
+            state.isPlaying = !state.isPlaying;
+            if (state.isPlaying) {
+                state.intervalId = setInterval(() => {
+                    const max = SCENARIOS[state.protocol].length - 1;
+                    if (state.stepIndex >= max) {
+                        state.isPlaying = false;
+                        clearInterval(state.intervalId);
+                    } else {
+                        state.stepIndex++;
+                    }
+                    render();
+                }, 3500);
+            } else {
+                clearInterval(state.intervalId);
+            }
+            render();
+        });
+
+        els.btnReset.addEventListener('click', () => {
+            state.stepIndex = 0;
+            state.isPlaying = false;
+            clearInterval(state.intervalId);
+            render();
+        });
+
+        // --- Init ---
+        lucide.createIcons();
+        render();
+
+    </script>
+</body>
+</html>
